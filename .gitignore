@@ -3,6 +3,7 @@
 *.env
 *.key
 *.pem
+syndicate_lead_ledger.csv
 
 # Telemetry and Generated Scan Artifacts
 *.json

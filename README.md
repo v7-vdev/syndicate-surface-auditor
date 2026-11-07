@@ -162,3 +162,4 @@ python compile_advisory_pdf.py
 ## Security & Ethical Disclaimer
 
 This tool is designed strictly for authorized penetration testing, vulnerability assessment, defensive network hardening, and educational research. Always obtain explicit written authorization before scanning third-party infrastructure.
+

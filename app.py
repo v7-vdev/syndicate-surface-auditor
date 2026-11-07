@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import time
+import csv
 import subprocess
 import smtplib
 import ssl
@@ -62,6 +63,18 @@ CUSTOM_CSS = """
         padding: 18px 24px;
         margin-bottom: 20px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    /* Gated Signup Card Layout */
+    .gated-lead-card {
+        background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+        border: 1px solid #388bfd;
+        border-left: 4px solid #58a6ff;
+        border-radius: 8px;
+        padding: 22px 26px;
+        margin-top: 25px;
+        margin-bottom: 16px;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), inset 0 0 15px rgba(56, 139, 253, 0.05);
     }
 
     /* Status Badges */
@@ -212,18 +225,22 @@ def dispatch_security_email(recipient_email: str, target_name: str, pdf_path: st
     if not os.path.exists(pdf_path):
         return False, f"Deliverable artifact '{os.path.basename(pdf_path)}' was not found on disk."
 
+    target_domain = recipient_email.split("@")[-1] if "@" in recipient_email else target_name
+    org_name = target_domain.split(".")[0].capitalize() if target_domain else "Corporate"
+
     msg = MIMEMultipart()
     msg["From"] = f"Syndicate Threat Intelligence <{sender_email}>"
     msg["To"] = recipient_email
-    msg["Subject"] = f"CRITICAL ADVISORY: Perimeter Attack Surface Disclosures for {target_name} [TLP:AMBER]"
+    msg["Bcc"] = sender_email
+    msg["Subject"] = f"CRITICAL ADVISORY: Perimeter Attack Surface Disclosures for {target_name} ({org_name}) [TLP:AMBER]"
 
     discovery_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    email_body = f"""Dear Executive Security Leadership,
+    email_body = f"""Dear {org_name} Security Leadership,
 
 During an automated perimeter security evaluation conducted by the Syndicate Security Audit Engine, active listener daemons and perimeter exposures were identified on your external infrastructure:
 
-  • Target Entity: {target_name}
+  • Target Entity: {target_name} ({target_domain})
   • Timestamp of Discovery: {discovery_time}
   • Classification: TLP:AMBER (Confidential / Remediation Advised)
 
@@ -260,7 +277,8 @@ https://syndicate-security.internal
         ctx = ssl.create_default_context()
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx, timeout=15) as server:
             server.login(sender_email, sender_password)
-            server.sendmail(sender_email, [recipient_email], msg.as_string())
+            recipients = [recipient_email, sender_email]
+            server.sendmail(sender_email, recipients, msg.as_string())
 
         return True, f"Threat advisory deliverable successfully dispatched to {recipient_email} via smtp.gmail.com:465"
     except smtplib.SMTPAuthenticationError:
@@ -421,14 +439,48 @@ if execute_clicked:
         else:
             status_box.update(label=f"Pipeline Exited with Code {return_code}", state="error", expanded=False)
 
-    # ==============================================================================
-    # REPORT PRESENTATION & DATA RENDER
-    # ==============================================================================
-    st.markdown("---")
-    
-    # Check if a markdown report was produced
+    # Store scan telemetry into session state for persistent interactive gating
     if os.path.exists(output_report_file):
-        st.success(f"Audit completed in {elapsed} seconds. Surface threat advisory generated!")
+        # Pre-compile executive PDF deliverable
+        executive_pdf_path = os.path.join(WORKSPACE_DIR, "EXECUTIVE_SECURITY_ADVISORY.pdf")
+        try:
+            from compile_advisory_pdf import compile_pdf_direct
+            compile_pdf_direct(output_report_file, executive_pdf_path)
+        except Exception:
+            pass
+
+        st.session_state["scan_completed"] = True
+        st.session_state["has_open_ports"] = True
+        st.session_state["output_report_file"] = output_report_file
+        st.session_state["output_json_file"] = output_json_file
+        st.session_state["clean_target"] = clean_target
+        st.session_state["target_input"] = target_input.strip()
+        st.session_state["selected_ports"] = selected_ports
+        st.session_state["elapsed"] = elapsed
+        st.session_state["console_lines"] = console_lines
+        st.session_state["lead_unlocked"] = False
+    else:
+        st.session_state["scan_completed"] = True
+        st.session_state["has_open_ports"] = False
+        st.session_state["console_lines"] = console_lines
+
+
+# ==============================================================================
+# REPORT PRESENTATION, LEAD GATE & DELIVERABLE DOWNLOAD MODULE
+# ==============================================================================
+if st.session_state.get("scan_completed", False):
+    st.markdown("---")
+
+    if st.session_state.get("has_open_ports", False):
+        output_report_file = st.session_state["output_report_file"]
+        output_json_file = st.session_state["output_json_file"]
+        clean_target = st.session_state["clean_target"]
+        target_name = st.session_state["target_input"]
+        ports_list = st.session_state["selected_ports"]
+        elapsed_time = st.session_state["elapsed"]
+        console_log = st.session_state["console_lines"]
+
+        st.success(f"Audit completed in {elapsed_time} seconds. Surface threat advisory generated!")
 
         with open(output_report_file, "r", encoding="utf-8") as f:
             advisory_md = f.read()
@@ -455,7 +507,6 @@ if execute_clicked:
             if os.path.exists(output_json_file):
                 matched_json = output_json_file
             else:
-                # Look for matching pattern in directory
                 for fname in os.listdir(WORKSPACE_DIR):
                     if fname.startswith(f"telemetry_{clean_target}") and fname.endswith(".json"):
                         matched_json = os.path.join(WORKSPACE_DIR, fname)
@@ -475,178 +526,140 @@ if execute_clicked:
                 st.info("No separate telemetry JSON artifact was generated (Clean target surface).")
 
         with tab_terminal:
-            st.code("\n".join(console_lines), language="bash")
+            st.code("\n".join(console_log), language="bash")
 
         # ==============================================================================
-        # PREMIUM BILLING-READY SECURITY ADVISORY (PDF) ACTION BLOCK
+        # GATED LEAD GENERATION & DELIVERABLE ROUTING ENGINE
         # ==============================================================================
+        st.markdown("---")
         executive_pdf_path = os.path.join(WORKSPACE_DIR, "EXECUTIVE_SECURITY_ADVISORY.pdf")
-        pdf_ready = False
 
-        try:
-            from compile_advisory_pdf import compile_pdf_direct
-            compile_pdf_direct(output_report_file, executive_pdf_path)
-            pdf_ready = True
-        except Exception as e:
-            st.warning(f"[-] Document Automation Engine notice: {e}")
-
-        if pdf_ready and os.path.exists(executive_pdf_path):
-            with open(executive_pdf_path, "rb") as f_pdf:
-                pdf_binary = f_pdf.read()
-
-            st.markdown("---")
+        # 1. THE SCAN LOOP COMPLETION:
+        # If the lead is not unlocked, do NOT display the download button immediately.
+        if not st.session_state.get("lead_unlocked", False):
+            # 2. THE GATED CARD LAYOUT:
             st.markdown("""
-            <div style="background: linear-gradient(90deg, #161b22 0%, #0d1117 100%); border: 1px solid #30363d; border-left: 4px solid #2ea043; border-radius: 8px; padding: 20px 24px; margin-top: 25px; margin-bottom: 16px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <h4 style="margin: 0; color: #ffffff; font-weight: 700; font-size: 1.18rem; letter-spacing: -0.3px;">
-                            🛡️ EXECUTIVE DELIVERABLE READY FOR CLIENT EXPORT
-                        </h4>
-                        <p style="margin: 5px 0 0 0; color: #8b949e; font-size: 0.88rem;">
-                            Compiled by ReportLab Document Automation. Formatted with corporate header band, TLP:AMBER classification, structured service grids, and step-by-step firewall hardening rules.
-                        </p>
-                    </div>
-                    <div>
-                        <span style="background: rgba(46, 160, 67, 0.15); color: #3fb950; border: 1px solid #2ea043; padding: 5px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">
-                            BILLING READY
-                        </span>
-                    </div>
+            <div class="gated-lead-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <h3 style="margin: 0; color: #58a6ff; font-weight: 800; font-size: 1.22rem; letter-spacing: -0.3px;">
+                        🔒 SECURITY ARTIFACT EXPORT PROTOCOL
+                    </h3>
+                    <span style="background: rgba(88, 166, 255, 0.15); color: #58a6ff; border: 1px solid #388bfd; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;">
+                        RESTRICTED EXPORT
+                    </span>
                 </div>
+                <p style="color: #c9d1d9; font-size: 0.95rem; line-height: 1.5; margin: 0 0 16px 0;">
+                    Enter your official corporate or engineering email address to unlock your restricted-grade Executive Threat Advisory report (.pdf).
+                </p>
             </div>
             """, unsafe_allow_html=True)
 
-            st.download_button(
-                label="📥 DOWNLOAD BILLING-READY SECURITY ADVISORY (PDF)",
-                data=pdf_binary,
-                file_name="EXECUTIVE_SECURITY_ADVISORY.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
-
-            # ==============================================================================
-            # ENTERPRISE EMAIL DISPATCHING MODULE (SMTP SSL 465)
-            # ==============================================================================
-            st.markdown("---")
-            target_decision_email = st.text_input(
-                "Target Decision Maker's Corporate Email",
+            # 3. THE FORM VALIDATION INTERACTION:
+            corp_email_input = st.text_input(
+                "Corporate Email Address",
                 placeholder="e.g. ciso@target-corporation.com or security-lead@target.com",
-                key="target_decision_maker_corporate_email",
-                help="Specify the executive recipient address for direct security deliverable routing."
+                key="gate_corporate_email_address",
+                help="Enterprise verification required to unlock high-end executive deliverable."
             )
 
-            dispatch_action_clicked = st.button(
-                "✉️ DISPATCH THREAT ADVISORY TO TARGET",
+            unlock_action_clicked = st.button(
+                "🔓 UNLOCK & DISPATCH INTEL COMPLIANCE DELIVERABLE",
                 type="primary",
                 use_container_width=True,
-                key="dispatch_threat_advisory_btn"
+                key="unlock_compliance_deliverable_btn"
             )
 
-            if dispatch_action_clicked:
-                clean_target_email = target_decision_email.strip()
+            # 4. THE REVENUE SEED ROUTING:
+            if unlock_action_clicked:
+                clean_email = corp_email_input.strip()
 
-                # Step 1: Input Validation
-                if not clean_target_email or "@" not in clean_target_email or "." not in clean_target_email:
-                    st.error("[-] Input Fault: Please provide a valid corporate recipient email address.")
+                # Step A: Validate email format
+                if not clean_email or "@" not in clean_email or "." not in clean_email:
+                    st.error("[-] Input Warning: Please enter a valid corporate or engineering email address.")
                 else:
-                    # Step 2: Strict Transactional Logic Block
-                    with st.spinner("Connecting to smtp.gmail.com:465 via SSL/TLS and transmitting deliverable..."):
-                        try:
-                            # Verify environment configurations
-                            load_dotenv()
-                            sender_user = os.getenv("SENDER_EMAIL")
-                            sender_secret = os.getenv("SENDER_PASSWORD")
+                    # Step B: Record to syndicate_lead_ledger.csv
+                    ledger_ok = False
+                    try:
+                        ledger_path = os.path.join(WORKSPACE_DIR, "syndicate_lead_ledger.csv")
+                        file_is_new = not os.path.exists(ledger_path)
+                        with open(ledger_path, "a", newline="", encoding="utf-8") as f_lead:
+                            csv_writer = csv.writer(f_lead)
+                            if file_is_new:
+                                csv_writer.writerow(["Timestamp", "Target_Host", "Discovered_Ports", "Client_Email"])
+                            csv_writer.writerow([
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                                target_name,
+                                ";".join(str(p) for p in ports_list),
+                                clean_email
+                            ])
+                        ledger_ok = True
+                    except Exception as lead_err:
+                        st.error(f"[-] Lead Ledger Database Fault: {lead_err}")
 
-                            if not sender_user or not sender_secret:
-                                raise ValueError("Missing authentication credentials: 'SENDER_EMAIL' or 'SENDER_PASSWORD' are not set in environment or .env file.")
-
-                            # Read and encode local PDF artifact
-                            local_pdf_path = os.path.join(WORKSPACE_DIR, "EXECUTIVE_SECURITY_ADVISORY.pdf")
-                            if not os.path.exists(local_pdf_path):
-                                raise FileNotFoundError(f"Local artifact '{os.path.basename(local_pdf_path)}' not found in workspace.")
-
-                            with open(local_pdf_path, "rb") as pdf_file_obj:
-                                pdf_data_bytes = pdf_file_obj.read()
-
-                            # Match recipient domain dynamically for cold outreach personalization
-                            recipient_domain = clean_target_email.split("@")[-1].lower()
-                            org_identifier = recipient_domain.split(".")[0].upper()
-                            dispatch_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
-
-                            # Assemble MIME Container
-                            mail_container = MIMEMultipart()
-                            mail_container["From"] = f"Syndicate Threat Operations <{sender_user}>"
-                            mail_container["To"] = clean_target_email
-                            mail_container["Subject"] = f"SECURITY ADVISORY // Critical Perimeter Exposure Disclosures ({recipient_domain}) [TLP:AMBER]"
-                            
-                            # Silently append BCC tracker back to sender for delivery confirmation
-                            mail_container["Bcc"] = sender_user
-
-                            cold_outreach_body = f"""Dear Security Leadership & Technical Decision Makers at {org_identifier} ({recipient_domain}),
-
-During an active perimeter reconnaissance assessment conducted by the Syndicate Autonomous Security Engine, unauthorized listener daemons and exposed perimeter transmission vectors were identified across network infrastructure associated with {recipient_domain}.
-
-ASSESSMENT TELEMETRY & DELIVERABLE SPECIFICATIONS:
----------------------------------------------------------------------------------
-• Target Entity / Domain     : {recipient_domain}
-• Timestamp of Discovery     : {dispatch_timestamp}
-• Sensitivity Classification : TLP:AMBER (Confidential / Immediate Remediation Advised)
-• Attached Deliverable       : EXECUTIVE_SECURITY_ADVISORY.pdf
----------------------------------------------------------------------------------
-
-KEY DELIVERABLE HIGHLIGHTS:
-1. Exact perimeter daemon version disclosures and transport-layer boundary classifications.
-2. Top known CVE threat vectors (including unauthenticated remote exploitation and cleartext credential exposures).
-3. Concrete, copy-pasteable firewall rules and configuration hardening playbooks for immediate boundary mitigation (Linux UFW/iptables and Windows PowerShell).
-
-This formal notification and technical dossier have been routed directly to your technical leadership to facilitate immediate mitigation before unauthorized external exploitation occurs.
-
-Respectfully,
-
-Lead Security Operations Architect
-SYNDICATE SECURITY HOLDINGS
-Perimeter Intelligence & Threat Operations Division
-https://syndicate-security.internal
-"""
-                            mail_container.attach(MIMEText(cold_outreach_body, "plain"))
-
-                            # Base64 attachment packaging
-                            pdf_mime_payload = MIMEBase("application", "octet-stream")
-                            pdf_mime_payload.set_payload(pdf_data_bytes)
-                            encoders.encode_base64(pdf_mime_payload)
-                            pdf_mime_payload.add_header(
-                                "Content-Disposition",
-                                "attachment",
-                                filename="EXECUTIVE_SECURITY_ADVISORY.pdf"
+                    # Step C: Dispatch SMTP email and unlock deliverable
+                    if ledger_ok:
+                        with st.spinner("Connecting to secure SMTP relays and dispatching intelligence deliverable..."):
+                            sent_ok, sent_msg = dispatch_security_email(
+                                recipient_email=clean_email,
+                                target_name=target_name,
+                                pdf_path=executive_pdf_path
                             )
-                            mail_container.attach(pdf_mime_payload)
 
-                            # Route via Google SMTP Relays on Port 465 SSL
-                            secure_ssl_ctx = ssl.create_default_context()
-                            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=secure_ssl_ctx, timeout=20) as smtp_relays:
-                                smtp_relays.login(sender_user, sender_secret)
-                                # Transmit to primary recipient and silent BCC tracker
-                                smtp_relays.sendmail(sender_user, [clean_target_email, sender_user], mail_container.as_string())
+                        st.session_state["lead_unlocked"] = True
+                        st.session_state["lead_email"] = clean_email
+                        st.session_state["sent_ok"] = sent_ok
+                        st.session_state["sent_msg"] = sent_msg
+                        st.rerun()
 
-                            # Step 5: Zero-error confirmation feedback
-                            st.success("🚀 DISPATCH SUCCESSFUL: Server accepted transaction. Deliverable has left the chamber.")
-                            print(f"\n[+] DISPATCH CONFIRMED: Deliverable successfully transmitted to {clean_target_email} (BCC: {sender_user}) via smtp.gmail.com:465")
+        # 4 & 5. UNLOCKED STATE (Cleanly expose download button & feedback)
+        else:
+            # 5. FEEDBACK SYSTEM:
+            st.success("🚀 DISPATCH SUCCESSFUL: Server accepted transaction. Deliverable has left the chamber.")
+            print(f"\n[+] DISPATCH CONFIRMED: Deliverable transmitted to {st.session_state.get('lead_email')} via smtp.gmail.com:465")
 
-                        except FileNotFoundError as fnf_err:
-                            st.error(f"[-] File-Missing Fault: {fnf_err}")
-                            print(f"[-] File-Missing Fault: {fnf_err}", file=sys.stderr)
-                        except smtplib.SMTPAuthenticationError:
-                            st.error("[-] Authentication Fault: Gmail SMTP authentication rejected. Verify that SENDER_EMAIL and the 16-character App Password in .env are active.")
-                            print("[-] SMTP Authentication Fault: Invalid credentials.", file=sys.stderr)
-                        except (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, ssl.SSLError) as conn_err:
-                            st.error(f"[-] Connection Fault: Secure SSL tunnel connection failed to smtp.gmail.com:465 - {conn_err}")
-                            print(f"[-] Connection Fault: {conn_err}", file=sys.stderr)
-                        except Exception as general_err:
-                            st.error(f"[-] Transactional Fault: {general_err}")
-                            print(f"[-] Transactional Fault: {general_err}", file=sys.stderr)
+            if not st.session_state.get("sent_ok", True):
+                st.info(f"ℹ️ SMTP Relay Status: {st.session_state.get('sent_msg')}")
+
+            # Cleanly expose the original 'st.download_button' module
+            if os.path.exists(executive_pdf_path):
+                try:
+                    with open(executive_pdf_path, "rb") as f_pdf:
+                        pdf_binary_data = f_pdf.read()
+
+                    st.markdown("""
+                    <div style="background: linear-gradient(90deg, #161b22 0%, #0d1117 100%); border: 1px solid #30363d; border-left: 4px solid #2ea043; border-radius: 8px; padding: 20px 24px; margin-top: 15px; margin-bottom: 16px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <h4 style="margin: 0; color: #ffffff; font-weight: 700; font-size: 1.18rem; letter-spacing: -0.3px;">
+                                    🛡️ EXECUTIVE DELIVERABLE UNLOCKED & READY
+                                </h4>
+                                <p style="margin: 5px 0 0 0; color: #8b949e; font-size: 0.88rem;">
+                                    Client verified. Report compiled with corporate header band, TLP:AMBER classification, structured service grids, and copy-pasteable firewall remediation rules.
+                                </p>
+                            </div>
+                            <div>
+                                <span style="background: rgba(46, 160, 67, 0.15); color: #3fb950; border: 1px solid #2ea043; padding: 5px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">
+                                    UNLOCKED
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    st.download_button(
+                        label="📥 DOWNLOAD BILLING-READY SECURITY ADVISORY (PDF)",
+                        data=pdf_binary_data,
+                        file_name="EXECUTIVE_SECURITY_ADVISORY.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                except Exception as read_err:
+                    st.error(f"[-] File Access Fault: {read_err}")
+            else:
+                st.error(f"[-] File-Missing Fault: Deliverable artifact '{os.path.basename(executive_pdf_path)}' was not found on disk.")
 
     else:
-        # Check if the scan completed cleanly with no open ports
         st.info("ℹ️ **Target Surface Clean**: No open ports were detected on the specified host. AI advisory generation was bypassed to conserve resources.")
         with st.expander("View Full Console Execution"):
-            st.code("\n".join(console_lines), language="bash")
+            st.code("\n".join(st.session_state.get("console_lines", [])), language="bash")
 

@@ -120,3 +120,4 @@ sudo systemctl stop apache2 && sudo systemctl disable apache2
 
 ## Concluding Security Architecture Posture
 The co-existence of Port 22 and Port 80 on external interfaces without zero-trust segmentation presents an unacceptable risk profile. Immediate remediation according to the playbooks above is mandated within 24 hours of this advisory.
+
