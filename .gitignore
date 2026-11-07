@@ -1,5 +1,32 @@
+# Security & Credentials - NEVER COMMIT
 .env
-*.json
-__pycache__/
-*.pyc
+*.env
+*.key
+*.pem
 
+# Telemetry and Generated Scan Artifacts
+*.json
+telemetry_*.json
+scan_*.json
+FINAL_ADVISORY_*.md
+EXECUTIVE_SECURITY_ADVISORY.pdf
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Streamlit Local Cache
+.streamlit/
+
+# OS Specific
+.DS_Store
+Thumbs.db
